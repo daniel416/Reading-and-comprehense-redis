@@ -1,0 +1,144 @@
+数据库
+	服务器保存数据库的方法
+	客户端切换数据库
+	数据库键值对的保存，以及针对数据库的添加、删除、查看、更新操作的实现方法。
+
+	服务器中的数据库
+		struct redisServer {
+			int dbnum;
+			redisDb *db // db[0],db[1] ........ db[dbnum-1]
+		};
+		数据库默认操作0号数据库，可以执行select N 切换数据库。
+
+		struct redisClient {
+			//记录当前正在使用的数据库
+			redisDb *db;
+		}；
+		redisClient.db指针指向redisServer.db数组的其中一个元素。而被指向的元素就是客户端的目标数据库。
+		通过修改客户端的db指针实现数据库的切换
+
+		typedef strcut redisDb {
+			//数据库键空间，保存着数据库中的所有键值对
+			dict *dict;
+		} redisDb;
+		键空间的键也就是数据库的键，每个键都是一个字符串对象。
+		键空间的值也就是数据库的值，每个值对象为字符串对象、列表对象、哈希表对象、集合对象和有序集合对象中的任意一种redis对象。
+
+		添加一个新键值对到数据库，实际上就是将一个新键值对添加到键空间里面。
+		数据库操作：添加、删除、更新、查询。
+		FLUSHDB清空整个数据库。
+		RANDOMKEY命令
+
+		读写键空间时的维护操作
+			当使用redis命令对数据库进行读写时，服务器不仅会对键空间执行读写操作还会执行一些额外的维护操作如：
+			1、读写一个键后，服务器会跟据键是否存在来更新服务器的键空间命中（hit）次数或键空间不命中（miss）次数
+			2、在读取一个键后，服务器更新键的LRU时间。
+			3、如果服务器在读取一个键时发现该键已经过期，那么服务器会先删除过期键，然后才会执行余下其他操作。
+			4、如果客户端使用watch命令监视了某个键，那么服务器在对被监视的键进行修改后，会将这个键标记为脏（dirty）。
+			5、服务器每个修改一个键后，对脏（dirty)计数器的值增加1，这个计数器会触发服务器的持久化
+			以及复制操作。
+			6、如果服务器开启数据库通知功能，服务器将按照配置发送相应数据库通知。
+
+		设置键的生存时间或过期时间
+			EXPIRE或PEXPIRE命令，客户端可以以秒或者毫秒精度为数据库中的某个键设置生存时间（TTL），在经过指定的秒数或者毫秒之后，服务器就会自动删除生存时间为0的键。
+			TTL和PTTL，返回剩余生存时间。
+
+			设置过期时间
+				EXPIRE <key> <ttl> 用于将键key的生存时间设置为ttl秒
+				PEXPIRE <key> <ttl>  用于将键key的生存时间设置为ttl毫秒。
+				EXPIREAT <key> <timestamp>  用于将键key的过期时间设置为timestamp所指定的秒数时间戳
+				PEXPIREAT <key> <timestamp>   用于将键key的过期时间设置为timestamp所指定的豪秒数时间戳	
+				最终的执行都是通过PEXPIREAT命令一样。
+			redisDb结构的expires字典保存了数据库中所有键的过期时间，我们称为过期字典。
+				过期字典的键时一个指针，这个指针指向键空间中的某个键对象。
+				过期字典的值是一个long long类型的整数，这个整数保存了键所指向的数据库键过期时间。
+
+		过期键删除策略
+			过期键如何删除。
+			定时删除：在设置键的过期时间的同时，创建一个定时器（timer）让定时器在键过期时间来临时，立即执行对键的删除操作。
+
+			惰性删除：放任键过期不管，但是每次从键空间获取键时，都检查是否过期
+
+			定期删除，每隔一段时间，程序对数据库进行一次检查，删除里面的过期键。
+
+			定期删除：内存及时得到释放，缺点 服务器响应时间和吞吐量照成影响。
+					时间是无序链表， 查找一个事件的时间复杂度O(N),并不能高效处理大量时间事件。
+			惰性删除：内存消息大，CPU消耗最低。
+			定期删除：是前两种策略的一种整合和折中。 定期（时间策略定制）
+
+			redis服务器使用惰性删除和定期删除两种策略。
+
+			惰性删除策略的实现
+				过期键的惰性删除策略有db.c/expireIfNeeded函数实现，所有读写数据库的redis命令在执行之前都会调用expireIfNeeded函数对输入键进行检查。
+					1.如果过期	expireIfNeeded 将输入键从数据库中删除
+					2.如果未过期，不处理。
+				过滤器
+			定期删除策略实现
+				过期键的定期删除策略由 redis.c/activeExpireCycle函数实现，每当redis的服务器周期性操作redis/serverCron函数执行时，activeExpireCycle函数就会被调用，在规定的时间内，分多次遍历服务器中的各个数据库，从数据库的expires字典随机检查一部分键的过期时间，并删除其中的过期键。
+				//每次检查多少个数据库
+				DEFAULT_KEY_NUMBERS = 20
+				for i in range(db_mumbers):
+					if currrent_db == sever.dbnum:
+						currrent_db = 0
+					redisDb = server.db[current_db]
+					current_db += 1
+
+					for j in range(DEFAULT_KEY_NUMBERS):
+						if redisDb.expires.size() == 0: break
+						key_with_ttl  = redisDb.expires.get_random_key()
+						if is_expired(ley_with_ttl):
+							delete_key(key_with_ttl)
+						if reach_time_limit(): return
+
+	AOF、RDB和复制功能对过期键的处理
+		在执行SAVE命令或者BGSAVE命令创建一个新的RDB文件时，程序对数据库中的键进行检查，已过期的键不会被保存到RDB文件。
+		载入RDB文件
+			如果开启RDB功能，在启动redis服务器时，会对RDB文件进行载入。
+			主服务器
+				程序会对文件保存的键进行检查，未过期的键会被载入到数据库
+			从服务器
+				全部载入，启动后通知主服务器进行数据同步，从服务器会被清空。
+		AOF文件写入
+			AOF持久化模式运行时，如果数据库中的某个键已经过期，但他还没有被惰性删除或者定期删除，那么AOF文件不会因为这个过期键而产生任何影响。
+			当过期键被惰性删除或者定期删除之后，程序会向AOF文件追加append一条DEL命令，来显示记录该键被删除。
+
+			AOF重写： 在执行AOF重写过程中，程序会对数据库中的键进行检查，过期键不会保存到从写得AOF文件中。
+		复制
+			当服务器运行在复制模式下时，从服务器的过期键移除动作由主服务器控制：
+				主服务器删除过期会显示通知从服务器。
+				从服务器在执行读取命令时，碰到过期数据不擅长，而是继续处理
+			保证主从服务器数据一致性。
+
+		数据库通知
+			可以让客户端通过订阅给定的频道或者模式，来获知数据库中键的变化，以及数据库中命令的执行情况。
+			服务器配置notify-keyspace-events选项决定了服务器所发送通知类型。
+			nofify.c/notifyKetyspaceEvent函数实现
+			void notifyKeyspaceEvent(int type, char *event, robj *key, int dbid)
+			type是当前要发送的通知类型，程序会跟据这个值来判断通知是否就是服务器配置的nofify-keyspace-events。
+			event 事件名称
+			keys 产生事件的键
+			dbid 产生事件的数据库号码
+		总结：
+			redis服务器的所有数据库都保存在redisServer.db数组中，数据库的数量则由redisServer.dbnum属性保存。
+			客户端通过修改redisCleint中指针来选择数据库
+			dict和expires两个字典构成。
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

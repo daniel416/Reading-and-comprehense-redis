@@ -1,0 +1,74 @@
+RDB持久化
+	将redis数据库内存中的数据保存到磁盘里，避免数据意外丢失。
+	命令：save和bgsave
+	SAVE阻塞服务器进程，直到RDB文件创建完毕。
+	BGSAVE命令会派生一个子进程，然后子进程负责创建RDB文件， 服务器进程继续处理命令请求
+
+	def SAVE():
+		rdbSace();
+	def BGSAVE():
+		pid = fork();
+		if pid == 0:
+			rdbSave()
+			singal_parent()
+		elif pid > 0:
+			handle_request_and_wait_signal()
+		else:
+			handle_fork_error()
+
+	AOF文件的更新频率通常比RDB文件的更新频率高，所以：
+		服务器开启了AOF持久化功能，那么服务器会优先使用AOF文件来还原数据库状态。
+		只有在AOF持久化功能处于关闭状态时，服务器才会使用RDB文件还原数据库。
+		BGREWRITEAOF命令和BGSAVE两个命令的实际工作都是由子进程执行，所以这两个命令在操作方面并没有什么冲突的地方， 性能方面考虑。
+		BGSAVE延迟BGREWRITEAOF执行。
+		BGREWRITEAOF命令正在执行，拒绝BGSAVE。
+
+		服务器在载入时会一直阻塞。
+
+		服务器可以配置save选项，让服务器每间隔一段时间自动执行一次BGSAVE命令。
+
+		struct redisServer {
+			//记录保存条件的数组
+			struct  saveparam *saveparams;
+		};
+		struct saveparam {
+			time_t seconds;
+			int changes;
+		};
+		除了saveparams数组之外，服务器状态还维持着一个dirty计数器，以及一个lastsave属性。
+		dirty计数器记录距离上一次成功save命令或者bgsave之后进行多少次修改
+		lastsave 属性记录上一次save时间
+
+		周期性执行函数serverCron默认每隔100毫秒就会执行一次，该函数用于对正在运行的服务器进行维护。
+		遍历saveparams数组，只要一个条件满足就会执行save
+
+		RDB文件结构
+				REDIS  db_version databases EOF check_sum
+		db_version长度为3字节，文件版本号
+		databases部分包含着零个或任意多个数据库，以及各个数据库的键值对数据：
+		EOF常量的长度为1个字节，标志着RDB文件正文内容的结束。
+		check_sum 是一个8字节的无符号整数，保存校验和。
+				SELECTDB db_number key_value_pairs
+
+		SELECTDB数据库开始标志
+		db_number:数据库号码
+		key_value_pairs保存了数据库中的所有键值对数据。
+				TYPE key value
+		带有过期时间的key_value_pairs
+				EXPIRETIME_MS ms TYPE key value
+
+				ENCODING integer   
+		如果字符串的长度小于或者等于20字节，那么这个字符串会直接原样保存
+		如果字符串长度大于20字节，这个字符串会被压缩之后再保存。
+		**如果服务器关闭RDB压缩功能，则都以无压缩的方式保存字符串值。
+		若果是压缩列表保存则直接，将压缩列表转换成字符串进行保存
+
+		RDB文件的解析和生存
+
+
+
+
+
+
+
+

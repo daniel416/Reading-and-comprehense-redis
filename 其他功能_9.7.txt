@@ -1,0 +1,107 @@
+发布订阅
+	redis的发布与订阅功能由PUBLISH/SUBSCRIBE/PSUBSCRIBE等命名组成
+	通过SBUSCRIBE命令，客户端可以订阅一个或多个频道，从而成为这些频道的订阅者subscriber，每当其他客户想被订阅的频道发送消息message时，频道的所有订阅者都会收到这条消息。
+	模式就是频道集合，由多个频道组成。
+	redisServer.pubsub_channels字典记录所有的频道，键的值时链表为所有订阅的客户端。
+	redisServer.pubsub_patterns链表记录所有的模式
+
+	发送消息  先遍历所有测channel，然后遍历模式，看时候有pattern与频道channel相匹配。
+
+	PUBSUB channel pattern 返回服务器当前被订阅的频道
+	PUBSUB NUMBER channel ......返回频道订阅者数量
+
+事务：
+	redis通过MUTIL、EXEC、WATCH等命令来实现事务transation功能，事务提供了一种将多个命令请求打包，然后一次性，按顺序地执行多个命令的机制，并且在事务执行期间，服务器不会中断事务而改去执行其他客户端的命令请求，它会将事务中的所有命令都执行完毕，然后才去处理其他客户端的命令请求。
+	ACID性能 原子性 一致性 隔离性和持久性
+	事务开始  命令入队 事务执行 三个阶段
+
+	def MULTI():
+		client.flags |= REDIS_MULTI;
+		replyOK();
+
+	每个客户端都有自己事务状态redisClient.mstate
+	typedef struct multiState {
+		multiCmd *commands;
+		int count;
+	};
+	typedef struct multiCmd {
+		robj **argv[];
+		int argc;
+		struct redisCommand *cmd;
+	}
+	当一个处于事务状态的客户端向服务器发送EXEC命令时，这个exec将立即被服务器执行。
+
+	def EXEC():
+		reply_queue[]
+		for argv, argc cmd in client.mstate.commands:
+			reply = execute_command(cmd, argv, argc)
+			reply_queue.append(reply)
+		client.flags &= ~REDIS_MULTI
+		client.mstate.count = 0
+		release_transaction_queue(client.mstate.commands)
+
+		send_reply_to_client(client, reply_queue)
+
+	WATCH 命令的实现
+		WATCH命令时一个乐观锁， 它可以在EXEC命令执行之前，监视任意数量的数据库键，并在EXEC命令执行时，检查被监视的键是否至少有一个已经被修改过了，如果被修改，则服务器拒绝执行事务，并向客户端返回代表事务执行失败的空回复。
+
+		每个redis数据库都保存着一个watched_keys字典，这个字典的键时某个被watch命令监视的数据库键
+		而字典的值则是一个链表，链表中记录了所有监视相应数据库键的客户端：
+
+		对数据进行修改的命令都会调用touchWatchKey函数对字典进行检查，如果有touchWatchKey函数会将监视被修改的客户端的REDIS_DIRTY_CAS标示打开，表示客户端的事务安全性以及被破坏。
+
+	事务的ACID性质
+		事务原子性是，事务的多个操作当作一个整体来执行，事务要么就执行执行事务的所有操作，要么就一个操作也不执行
+		事务不支持回滚是因为这种复杂的功能和redis追求简单高效的设计不想符。
+
+		一致性
+			redis通过谨慎的错误检测和简单得设计来保证食物的一致性。
+			1、入队错误 命令不存在或者格式不正确 redis拒绝执行这个事务。
+			2、 执行错误。不会中断事务的执行，它会继续执行事务中余下的命令
+
+			服务器停机
+				导致数据丢失，但是不会影响一致性
+
+			隔离性
+				单线程执行保证一致性。
+	Lua脚本
+		linux2.6版本开始引入对lua脚本的支持，通过在服务器嵌入Lua环境，redis客户端可以使用Lua脚本，直接在服务端原子地执行多个Rdis命令。
+		EVAL命令可以直接对输入的脚本进行求值：
+		script flush script exists script load  script kill
+
+		为了在redis服务器中执行Lua脚本，Redis在服务内嵌了一个Lua环境，并对这个Lua环境进行了一系列修改，从而保证这个Lua环境可以满足Redis服务器的需要。
+		1、创建一个基础的Lua环境
+		2、载入多个函数库到Lua环境里面。
+		3、创建全局彪哥redis，这个表格包含对Redis进行操作的函数，比如用于在Lua脚本中执行Redis命令的redis.call函数。
+		4、使用redis自制的随机函数替换Lua带有负作用的随机函数
+		5、创建排序辅助函数
+		6、创建redis.pcall函数的错误报告辅助函数
+		7、对Lua环境全局变量进行保护
+		8、将完成修改的Lua环境保存到服务器状态的的lua属性中，等待执行服务器传来的Lua脚本。
+
+		每当服务器添加一个新的从服务器时，主服务器都会清空自己的repl_scriptcache_dict字典。
+		lua 执行脚本 EVAL 和EVALSHA 两个命令 
+
+		需要进一步了解lua脚本的语法和标准库。
+
+		排序sort   limit  get 等参数
+		监视器
+		慢查询日志
+		二进制位数
+		
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

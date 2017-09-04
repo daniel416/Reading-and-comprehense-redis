@@ -1,0 +1,166 @@
+对象：
+	主要数据结构：动态字符串SDS,双端队列，字典、压缩表、整数集合等
+	redis并没有直接使用这些数据结构来实现键值数据库，而是基于这些数据结构创建一个对象系统，这些系统包含字符串对象、列表对象、哈希对象、集合对象和有序集合对象这五种类型的对象，每个对象用到至少一种这些数据结构。
+
+	对象还实现了基于引用计数技术的内存回收机制，当程序不在使用某个对象的时候，这个对象占用的内存就会被自动释放，
+	对象通过引用计数实现了对象共享技术，多个数据库键共享同一个对象来节约内存。
+	redis 对象带有访问时间记录。在maxmemory功能的情况下，空转时长较大的那些键可能被服务器删除。
+
+	redis使用对象来表示数据库中的键和值，每当我们在redis的数据库中新创建一个键值对时。
+	一个对象用作键值对的键。
+	一个对象用作键值对的值。
+
+
+	redisObject {
+		unsigned type:4;
+		unsigned encoding:4;
+
+		void *ptr;
+	}
+
+	类型：
+		type属性记录了对象的类型
+		REDIS_STRING 字符串对象
+		REDIS_LIST
+		REDIS_HASH
+		REDIS_SET
+		REDIS_ZSET
+
+		对于redis数据库保存的键值对来说，键总是一个字符串对象。
+		而值则可以是其他五种。TYPE返回的是值类型
+
+		SET msg "hello world"
+		TYPE msg   ->string
+
+		RPUSH numbers 1 3 5
+		TYPE numbers ->list
+
+		HMSET profile name Tom  age 25 carees programmer
+		TYPE profile ->hash
+
+		SADD fruits apple banana cherry
+		TYPE fruits ->set
+
+		ZADD price 8.5 apple 5.0 banana 6.0 cherry
+		TYPE price ->zset
+
+	编码和底层实现
+		对象的ptr指针指向对象的底层实现数据结构，而这些数据结构由对象的encoding属性决定。
+		REDIS_ENCODING_INT  		long类型整数
+		REDIS_ENCODING_EMBSTR		embstr编码的简单动态字符串
+		REDIS_ENCODING_RAW			简单动态字符串
+		REDIS_ENCODING_HT			字典
+		REDIS_ENCODING_LINKEDLIST	双端队列
+		REDIS_ENCODING_ZIPLIST		压缩列表
+		REDIS_ENCODING_INTSET		整数集合
+		REDIS_ENCODING_SKIPLIST		跳跃表和字典
+
+		每种类型的对象都至少使用两种不同的编码。OBJECT ENCODING 查看编码
+		通过encoding属性来设定对象所使用的编码，而不是为特定对象关联一种固定的编码，极大地提升了redis的灵活性和效率。如：
+			在列表对象比较少时候使用压缩表
+				1、压缩表比双端队列更节约内存，并且在元素较少时，在内存中以连续块方式保存的压缩表比双端链表可以跟快被载入到缓存中。
+				2、当列表元素越来越多，使用压缩表来保存元素的优势逐渐消失，功能更强、也更适合保存大量元素的双端队列（压缩表插入、删除效率低）
+
+		字符串对象
+			字符串对象的编码可以试int raw embstr。
+			如果一个字符串对象保存的是整数值，并且这个整数值可以用long类型来表示，那么字符串对象会将整数值保存在字符串ptr属性里，并将字符串对象的编码设置为int。
+
+			字符串且长度大于32字节，使用动态字符串SDS来保存 两次内存申请
+
+			字符串长度小于32字节， 使用embstr编码方式来保存字符串	只需要一次内存申请
+			浮点数也是通过字符串保存
+
+			embstr编码的字符串对象实际是只读的，当我们队embstr编码的字符串对象执行任何修改都会将embstr转换成raw。
+
+			SET/GET/APPEND/INCRBYFLOAT/INCRBY/DECRBT/STRLEN/SETRANGE/GETRANGE
+		列表对象
+			列表对象的编码可以是ziplist和linkedlist。
+			ziplist编码的列表对象使用压缩表作为底层实现，每个压缩列表节点(entry)保存一个列表元素。
+			linkedlist编码的列表使用双端队列作为底层实现，每个双端链表节点node都保存了一个字符串对象，
+			linkedlist编码的列表对象在底层的双端链表结构中包含了多个字符串对象。字符串对象是redis五种类型的对象中唯一一种会被其他四中类型对象嵌套的对象。
+
+			ziplist编码：对象所有字符串元素长度小于64 || 列表对象保存元素数量小于512. 可以通过配置修改
+			LPUSH/RPUSH/LPOP/RPOP/LINDEX/LLEN/LINSERT/LREM/LTRIM/LSET
+		哈希对象
+			哈希对象的编码可以试ziplist或者hashtable。
+			ziplist编码的哈希对象使用压缩表作为底层实现，键节点和值借点分别插入到压缩表的表尾。
+			hashtable编码的哈希对象使用字典作为底层实现，哈希对象中的每个键值对都是用一个字典键值来表示。
+			字典的每个键都是一个字符串对象， 对象中保存了键值对的键。
+			字典的每个值都是一个字符串对象， 对象中保存了键值对的值。
+
+			ziplist编码：对象所有字符串元素长度小于64 || 列表对象保存元素数量小于512. 可以通过配置修改
+			HSET/HGET/HEXISTS/HDEL/HLEN/HGETALL/
+		集合对象
+			集合对象的编码可以试inset或者hashtable。
+			hashtable编码的集合对象使用字典作为底层实现，字典的每个键都是一个字符对象，字典的值被设置为NULL。
+
+			都是整数值 || 列表对象保存元素数量小于512. 可以通过配置修改
+			SADD/SCARD/SISMEMBER/SMEMBERS/SRANDMEMBER/SPOP/SREM
+		有序集合对象
+			有序集合使用ziplist或者skiplist
+			ziplist编码的压缩列表对象使用压缩列表作为底层实现，每个集合元素使用两个紧挨着的压缩列表节点来保存，第一个节点保存元素的成员（member），而第二个元素则保存元素的分值（score）。必须按照从小到大进行排列、
+			skiplist编码的有序集合对象使用zset结构作为底层实现。
+			typedef struct zset {
+				zskiplist *zsl;
+				dict *dict;
+			};
+			zset结构中的zsl跳跃表按分值从小到大保存了所有集合元素，每个跳跃节点都保存一个集合元素，跳跃表节点object属性保存袁术的成员。score保存了元素的分值。
+			dict字典为有效集合创建一个从成员到分值的映射，字典表每个键值对都保存了一个集合元素：字典的键保存了元素成员，而字典的值保存了元素的分值。 通过这个字典，程序可以通过O（1）复杂度查找给定成员的分值。
+			元素成员是一个字符串对象， 而分值是一个double类型浮点数。
+			注意：跳跃表和字典来保存有序集合元素，这两种数据结构都会通过指针来共享相同元素的成员和分值。
+
+			ziplist编码：对象所有字符串元素长度小于64 || 列表对象保存元素数量小于128
+			可以通过配置修改
+			ZADD/ZCARD/ZCOUNT/ZRANGE/ZRERANGE/ZRANK/ZREVRANK/ZREM/ZSCORE
+
+			通用操作命令：DEL EXPIRE RENAME TYPE OBJECT
+			命令只能对特定类型的键执行
+			set/get/append/strlen等只能对字符串执行
+			hdel/hset/hget/glen等命令只能对哈希键执行
+
+			在执行一个类型特定的命令之前，redis会先检查输入键类型是否正确，然后再决定是否执行给定的命令。
+
+			服务器首先检查输入数据库键的值对象是否为执行命令所需要的类型，如果是的话，服务器就对键执行指定的命令。
+			redis除了会更具对象的类型来判断键是否能够执行指定的命令之外，还会根据值对象的编码方式，选择正确的命令实现代码执行命令。
+	内存回收
+		应为C语言不具备自动内存回收功能，引用计数技术实现内存回收机制，
+		typedef struct redisObject {
+			int refcount;
+		};
+		创建一个对象，引用计数为1.
+		被一个新程序使用时 它的引用计数+1，
+		不再使用时，它的引用计数-1；
+		为0时内存被释放。
+		robj *s = createStringObject();
+		decrRefcount(s);
+	对象共享
+		目前来说，redis会在初始化服务器时，创建一万个字符串对象，这些对象包含了从0到9999的所有整数值。
+		收CPU时间限制，redis只对包含证书值得字符串对象进行共享。
+	对象空转时常
+		lru属性记录对象最后一次被命令程序访问的时间。
+		unsigned lri:4;
+
+		OBJECT IDLETIME可以打印给定键的空转时长。
+		object IDKETIME实现特殊不会修改对象的lru属性
+
+		如果服务器打开了maxmemory选项，并且服务器用于回收内存的算法为volatile-lru或者allkeys-lru，那么服务器占用的内存数超过了maxmemory所设置的上限值时，空转时常较高的那部分键就会优先被服务器释放，从而回收内存。
+
+	总结：
+		redis数据库的每个键值队的键和值都是一个对象
+		redis共有字符串、列表、哈希、集合和有序集合五种类型的对象，每种类型的对象至少都有两种或以上的编码方式，不同的编码可以在不同场景上优化对象的使用效率。
+		服务器执行命令：类型检查，编码检查->调用不同接口。
+		redis refcount引用计数机制
+		redis 共享对象
+		redis lri最后访问时间。
+
+
+
+
+
+
+
+
+
+
+
+

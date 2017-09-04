@@ -1,0 +1,66 @@
+问题：
+   如何主从备份？
+   如何做到负载均衡？
+   如何做到平滑扩展。
+   可用性，容灾？
+   选举算法？
+
+
+原理：
+
+1、redis 集群实现
+  集群通信
+  1、MEET消息：当发送者接收到客户端发送的cluster meet命令时，发送者会向接收者发送meet消息，请求接收加入到发送者所在的集群里。
+  2、PING消息：集群里用来检测相应节点是否在线的消息，PING检测是否存活。 策略？
+  3、PONG消息：当接收者收到发送者发来的meet消息或者ping消息时，为了向发送者确认这条meet消息或者ping消息已到达
+  				接收者向发送者返回一条pong消息。另外，一个节点也可以通过向集群广播自己的pong消息来让集群中的其
+  				他节点立即刷新关于这个节点的认识
+  4、FAIL消息：当一个主节点a判断另外一个主节点b已经进入fail状态时，节点a向集群广播一条关于节点b的fail
+				消息，所有收到这条消息的节点都会立即将节点b标记为已下线。
+  5、PUBLISH消息：当节点接收到一个PUBLISH命令时，节点会执行这个命令，并向集群广播一条PUBLISH消息，
+				所有接收到PUBLISH消息的节点都会执行相同的PUBLISH命令。
+  6、FAILOVER_AUTH_REQUEST消息：当slave的master进入fail状态，slave向集群中的所有的节点发起投票，master才具有选举权，说好的全民平等呢？。
+  7、FAILOVER_AUTH_ACK消息：当master接收到FAILOVER_AUTH_REQUEST消息，选举算法是否。
+  8、UPDATE消息：当接收到ping、pong或meet消息时，检测到自己与发送者slots不一致，且发送的slots的纪元过时，就发送slots中纪元大于
+  				 发送者的节点信息作为update消息的内容给发送者。
+   9、MFSTART消息：当发送者接收到客户端发送的cluster failover命令时，发送者会向自己的master发送MFSTART消息，进行手动failover。
+
+
+   clusterProcessPacket 集群的核心处理函数， 负责处理消息。
+
+
+   redis cluster 中的每一个节点都需要知道其他节点的情况，这里就包括其他节点负责处理哪些键值对。
+   slot桶进行分区
+
+
+   问题： 节点之间怎么数据同步，如何做到数据一致性， 一主一辈的模式，可以用redis内部实现的主从备份实现数据同步，单节点不断增多，多个master的时候，如何同步？
+
+
+   数据平衡性是说，数据尽可能均分到每个节点上去，存储达到均衡。
+
+   一致性hash算法，解决节点在增。删时大量数据迁移。
+   虚拟节点， 确保某台服务器死机时达到负载均衡
+
+
+   一致性哈希算法，既可以在客户端实现，也可以在中间件上实现proxy,
+   在客户端实现中，必须初始化redis节点映射表， hask(key) --->目标node
+   定时器实现映射关系更新。
+
+   另一种是中间件的实现方法， 客户端和redis节点之间多一个代理，代理经过hash计算得到对应节点， 一致性hash算法就在中间件里面实现。
+
+   twemproxy 内部实现一致性哈希算法， 对客户端而言透明。
+
+
+心跳机制：gossip机制
+ redis cluster 中的没一个几点都需要知道其他节点的情况，要达到这个目标，
+ gossip机制。
+
+ 集群之间交互信息是用其内部专用连接的，在 redis cluster 初始化函数 clusterInit() 中监听了该端口，并在事件中心注册了 clusterAcceptHandler()。 从 clusterAcceptHandler()的逻辑来看，当有新的连接到来时，会为新的连接注册 clusterReadHandler()回调函数。
+
+ clusterSendPing() 中发送心跳数据。
+
+ 故障修复：
+  一种是集群自治实现的故障修复。
+  一种是人工触发的故障修复。
+
+

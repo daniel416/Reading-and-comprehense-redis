@@ -1,0 +1,380 @@
+1、集群如何添加节点
+	集群添加节点时通过客户端运行cluster meet ip port 来实现的，把节点B(ip:port)加入集群，具体实现：
+	1、客户端向A节点发送cluster meet。
+	2、A节点在本地为B节点创建响应的数据结构，并向B节点发送meet命令。
+	3、B节点在本地为A创建响应的数据结构，并向A节点发送PONG消息，表示收到A节点消息。
+	4、A节点收到PONG以后，向B节点返回PING消息。
+	5、A节点通过Gossip协议向集群中的其他节点传播，一段时间后，集群所有节点都知道B。
+2、slave选举和提升
+	currentEpoch 最新状态，集群的逻辑时钟，每次集群slot变化状态变化currentEpoch会变化代表最新状态。
+	configEpoch  集群中所有的master都持有唯一的configEpoch值，主从具有相同的configEpoch，每次选举成功 configEpoch = currentEpoch +1 确保唯一。
+
+	投票的条件
+    发起投票的节点必须是slave节点，并且它的master节点
+    发起投票节点的currentEpoch不低于投票节点的currentEpoch
+    slave节点的configEpoch不低于投票节点特定slots的configEpoch（这些特定slots是指投票节点知道的down掉得master节点所拥有的slots）
+
+ 3、nodes如何重新加入集群
+    node A被告知slot 1、2现在有node B接管，假如这两个slots目前有A持有，且A只持有这两个slots，那么此后A将放弃这2个slots，成为空的节点；此后A将会被重新配置，成为其他新master的slave。这个规则可能有些复杂，A离群一段时间后重新加入集群，此时A发现此前自己持有的slots已经被其他多个nodes接管，比如slot 1被B接管，slot 2被C接管。在重新配置时，最终此节点上的slots将会被清空，那个窃取自己最后一个slot的node，将成为它的新master。节点重新加入集群，通常发生在failover之后，旧的master（也可以为slave）离群，然后重新加入集群
+
+ 4、集群拓扑
+    Redis Cluster中每个node都与其他nodes的端口建立TCP链接，在由N各Nodes之间通过gossip协议和配置更新的机制，来避免每次都交互大量的消息，最终确保在nodes之间的信息传送量是可控的。
+ 5、节点间handshake
+    Nodes通过Bus端口发送ping、pong；如果一个节点不属于集群，那么它的消息将会被其他nodes全部丢弃。一个节点被认为是集群成员的方式有2种：
+    A、如果此node在“Cluster meet”指令中引入，此命令的主要意义就是将指定node加入集群。那么对于当前节点，将认为指定的node为“可信任的”。
+	B、当其他nodes通过gossip引入了新的nodes，这些nodes也是被认为是“可信任的”。
+6、Hash Slots配置传播
+	Redis Cluster中重要的一部分就是传播集群中哪些节点上持有的哪些hash slots信息；无论是启动一个新的集群，还是当master失效其slave提升后更新配置，这对它们都至关重要。
+	有2种方式用于hash slot配置的传播：
+		A、heartbeat 消息：发送者的ping、pong消息中，总是携带自己目前持有的slots信息，不管自己是master还是slave。
+
+		B、UPDATE消息：因为每个心跳消息中会包含发送者的configEpoch和其持有的slots，如果接收者发现发送者的信息已经stale（比如发送者的configEpoch值小于持有相同slots的master的值），它会向发送者反馈新的配置信息（UPDATE），强制stale节点更新它。
+		
+	当一个新的节点加入集群，其本地的hashslots映射表将初始为NULL，即每个hash slot都没有与任何节点绑定。
+
+	Rule 1：如果此node本地视图中一个hash slot尚未分配（设置为NULL），并且有一个已知的node声明持有它，那么此node将会修改本地hash slot的映射表，将此slot与那个node关联。slave的failover操作、reshard操作都会导致hash slots映射的变更，新的配置信息将会通过心跳在集 群中传播。
+
+	Rule 2：如果此node的本地视图中一个hash slot已经分配，并且一个已知的node也声明持有它，且此node的configEpoch比当前slot关联的master的configEpoch值更大，那么此node将会把slot重新绑定到新的node上。根据此规则，最终集群中所有的nodes都赞同那个持有声明持有slot、且configEpoch最大值的nodes为slot的持有者。
+8、Replica迁移
+
+集群
+	redis集群是redis提供的分布式数据库方案，集群通过分片来进行数据共享，并提供复制和故障转移功能。
+	节点、槽指派、命令执行、重新分骗、转向故障转移、消息等各方面进行介绍。
+
+	节点
+		一个redis集群通常由多个节点组成，在刚开始的时候，每个节点都相互独立，他们都处于一个只包含自己的集群中。
+		cluster MEET IP PORT
+		向一个节点node发送CLUSTER MEEMT 向指定的IP和port进行握手
+
+		redis服务器在启动的时候会跟据cluster-enabled配置选项是否为yes来决定是否开启服务器的集群模式
+
+		1、节点会继续使用文件事件处理器来处理命令和返回命令的回复
+		2、节点会继续使用时间事件处理来执行serverCron函数，而serverCron函数会调用集群模式特有的clusterCron函数，clusterCron函数负责执行在集群模式下需要执行的常规操作，如向集群节点发送GossipX消息，检查节点是否断线。或者检查是否需要对下线节点进行自动故障转移等操作。
+		3、节点会继续使用数据库来保存键值对数据
+		4、节点会继续使用RDB持久化模块和AOF持久化模块来执行持久化工作
+		5、节点继续使用发布与订阅模式。
+		6、节点急需使用复制模块来进行节点的复制工作。
+		7、节点继续使用lua脚本环境来执行客户端的lua脚本。
+
+		集群数据结构
+		// 节点状态
+struct clusterNode {
+
+    // 创建节点的时间
+    mstime_t ctime; /* Node object creation time. */
+
+    // 节点的名字，由 40 个十六进制字符组成
+    // 例如 68eef66df23420a5862208ef5b1a7005b806f2ff
+    char name[REDIS_CLUSTER_NAMELEN]; /* Node name, hex string, sha1-size */
+
+    // 节点标识
+    // 使用各种不同的标识值记录节点的角色（比如主节点或者从节点），
+    // 以及节点目前所处的状态（比如在线或者下线）。
+    int flags;      /* REDIS_NODE_... */
+
+    // 节点当前的配置纪元，用于实现故障转移
+    uint64_t configEpoch; /* Last configEpoch observed for this node */
+
+    // 由这个节点负责处理的槽
+    // 一共有 REDIS_CLUSTER_SLOTS / 8 个字节长
+    // 每个字节的每个位记录了一个槽的保存状态
+    // 位的值为 1 表示槽正由本节点处理，值为 0 则表示槽并非本节点处理
+    // 比如 slots[0] 的第一个位保存了槽 0 的保存情况
+    // slots[0] 的第二个位保存了槽 1 的保存情况，以此类推
+    unsigned char slots[REDIS_CLUSTER_SLOTS/8]; /* slots handled by this node */
+
+    // 该节点负责处理的槽数量
+    int numslots;   /* Number of slots handled by this node */
+
+    // 如果本节点是主节点，那么用这个属性记录从节点的数量
+    int numslaves;  /* Number of slave nodes, if this is a master */
+
+    // 指针数组，指向各个从节点
+    struct clusterNode **slaves; /* pointers to slave nodes */
+
+    // 如果这是一个从节点，那么指向主节点
+    struct clusterNode *slaveof; /* pointer to the master node */
+
+    // 最后一次发送 PING 命令的时间
+    mstime_t ping_sent;      /* Unix time we sent latest ping */
+
+    // 最后一次接收 PONG 回复的时间戳
+    mstime_t pong_received;  /* Unix time we received the pong */
+
+    // 最后一次被设置为 FAIL 状态的时间
+    mstime_t fail_time;      /* Unix time when FAIL flag was set */
+
+    // 最后一次给某个从节点投票的时间
+    mstime_t voted_time;     /* Last time we voted for a slave of this master */
+
+    // 最后一次从这个节点接收到复制偏移量的时间
+    mstime_t repl_offset_time;  /* Unix time we received offset for this node */
+
+    // 这个节点的复制偏移量
+    long long repl_offset;      /* Last known repl offset for this node. */
+
+    // 节点的 IP 地址
+    char ip[REDIS_IP_STR_LEN];  /* Latest known IP address of this node */
+
+    // 节点的端口号
+    int port;                   /* Latest known port of this node */
+
+    // 保存连接节点所需的有关信息
+    clusterLink *link;          /* TCP/IP link with this node */
+
+    // 一个链表，记录了所有其他节点对该节点的下线报告
+    list *fail_reports;         /* List of nodes signaling this as failing */
+
+};
+
+
+// 集群状态，每个节点都保存着一个这样的状态，记录了它们眼中的集群的样子。
+// 另外，虽然这个结构主要用于记录集群的属性，但是为了节约资源，
+// 有些与节点有关的属性，比如 slots_to_keys 、 failover_auth_count 
+// 也被放到了这个结构里面。
+typedef struct clusterState {
+
+    // 指向当前节点的指针
+    clusterNode *myself;  /* This node */
+
+    // 集群当前的配置纪元，用于实现故障转移
+    uint64_t currentEpoch;
+
+    // 集群当前的状态：是在线还是下线
+    int state;            /* REDIS_CLUSTER_OK, REDIS_CLUSTER_FAIL, ... */
+
+    // 集群中至少处理着一个槽的节点的数量。
+    int size;             /* Num of master nodes with at least one slot */
+
+    // 集群节点名单（包括 myself 节点）
+    // 字典的键为节点的名字，字典的值为 clusterNode 结构
+    dict *nodes;          /* Hash table of name -> clusterNode structures */
+
+    // 节点黑名单，用于 CLUSTER FORGET 命令
+    // 防止被 FORGET 的命令重新被添加到集群里面
+    // （不过现在似乎没有在使用的样子，已废弃？还是尚未实现？）
+    dict *nodes_black_list; /* Nodes we don't re-add for a few seconds. */
+
+    // 记录要从当前节点迁移到目标节点的槽，以及迁移的目标节点
+    // migrating_slots_to[i] = NULL 表示槽 i 未被迁移
+    // migrating_slots_to[i] = clusterNode_A 表示槽 i 要从本节点迁移至节点 A
+    clusterNode *migrating_slots_to[REDIS_CLUSTER_SLOTS];
+
+    // 记录要从源节点迁移到本节点的槽，以及进行迁移的源节点
+    // importing_slots_from[i] = NULL 表示槽 i 未进行导入
+    // importing_slots_from[i] = clusterNode_A 表示正从节点 A 中导入槽 i
+    clusterNode *importing_slots_from[REDIS_CLUSTER_SLOTS];
+
+    // 负责处理各个槽的节点
+    // 例如 slots[i] = clusterNode_A 表示槽 i 由节点 A 处理
+    clusterNode *slots[REDIS_CLUSTER_SLOTS];
+
+    // 跳跃表，表中以槽作为分值，键作为成员，对槽进行有序排序
+    // 当需要对某些槽进行区间（range）操作时，这个跳跃表可以提供方便
+    // 具体操作定义在 db.c 里面
+    zskiplist *slots_to_keys;
+
+    /* The following fields are used to take the slave state on elections. */
+    // 以下这些域被用于进行故障转移选举
+
+    // 上次执行选举或者下次执行选举的时间
+    mstime_t failover_auth_time; /* Time of previous or next election. */
+
+    // 节点获得的投票数量
+    int failover_auth_count;    /* Number of votes received so far. */
+
+    // 如果值为 1 ，表示本节点已经向其他节点发送了投票请求
+    int failover_auth_sent;     /* True if we already asked for votes. */
+
+    int failover_auth_rank;     /* This slave rank for current auth request. */
+
+    uint64_t failover_auth_epoch; /* Epoch of the current election. */
+
+    /* Manual failover state in common. */
+    /* 共用的手动故障转移状态 */
+
+    // 手动故障转移执行的时间限制
+    mstime_t mf_end;            /* Manual failover time limit (ms unixtime).
+                                   It is zero if there is no MF in progress. */
+    /* Manual failover state of master. */
+    /* 主服务器的手动故障转移状态 */
+    clusterNode *mf_slave;      /* Slave performing the manual failover. */
+    /* Manual failover state of slave. */
+    /* 从服务器的手动故障转移状态 */
+    long long mf_master_offset; /* Master offset the slave needs to start MF
+                                   or zero if stil not received. */
+    // 指示手动故障转移是否可以开始的标志值
+    // 值为非 0 时表示各个主服务器可以开始投票
+    int mf_can_start;           /* If non-zero signal that the manual failover
+                                   can start requesting masters vote. */
+
+    /* The followign fields are uesd by masters to take state on elections. */
+    /* 以下这些域由主服务器使用，用于记录选举时的状态 */
+
+    // 集群最后一次进行投票的纪元
+    uint64_t lastVoteEpoch;     /* Epoch of the last vote granted. */
+
+    // 在进入下个事件循环之前要做的事情，以各个 flag 来记录
+    int todo_before_sleep; /* Things to do in clusterBeforeSleep(). */
+
+    // 通过 cluster 连接发送的消息数量
+    long long stats_bus_messages_sent;  /* Num of msg sent via cluster bus. */
+
+    // 通过 cluster 接收到的消息数量
+    long long stats_bus_messages_received; /* Num of msg rcvd via cluster bus.*/
+
+} clusterState;
+
+typedef struct clusterLink {
+
+    // 连接的创建时间
+    mstime_t ctime;             /* Link creation time */
+
+    // TCP 套接字描述符
+    int fd;                     /* TCP socket file descriptor */
+
+    // 输出缓冲区，保存着等待发送给其他节点的消息（message）。
+    sds sndbuf;                 /* Packet send buffer */
+
+    // 输入缓冲区，保存着从其他节点接收到的消息。
+    sds rcvbuf;                 /* Packet reception buffer */
+
+    // 与这个连接相关联的节点，如果没有的话就为 NULL
+    struct clusterNode *node;   /* Node related to this link if any, or NULL */
+
+} clusterLink;
+
+	CLUSTER MEET命令的实现
+		通过向A节点发送CLUSTER MEET命令，客户端可以让接收命令的节点A将另一个节点B添加到节点A当前所在的集群
+		步骤：
+			1、节点A会为节点B创建一个clusterNode结构，并将该结构添加到自己clusterState.nodes字典里面。
+			2、之后节点A根据CLUSTER MEET命令给定的IP地址和端口，向B节点发送一条meet消息。
+			3、B节点收到MEET消息，节点B会为节点A创建一个clusterNode结构，并将该结构添加到clusterSate.nodes字典里面。
+			4.之后B节点向节点A返回一条PONG消息
+			5、A收到B的PONG消息，知道B节点已经成功收到自己发送的MEET消息
+			6、之后A节点向B节点返回一条PING消息。
+			7、节点B收到PING消息，知道A已收到PONG消息，完成握手。
+			之后节点A通过gossip协议传播给集群的其他节点，让其他节点也与节点B进行握手。最终B节点被集群所有的节点认识。
+	槽指派
+		redis集群通过分片的方式来保存数据库的键值对：集群的整个数据被分为16384个槽slot，数据库中的每个键都属于这个16384个槽的其中一个，集群每个节点可以处理0个或最多16384个槽。
+
+		集群中16384个槽都有节点处理是，那么集群处于上线状态，相反地，如果数据库任何一个槽没有得到处理则处于下线状态。
+
+		一个节点除了将自己负责处理的槽记录在clusterNode结构的slots属性和numslots属性之外，还会将自己的sloats数组通过消息发送给集群中的其他节点，来告知其他节点自己目前负责处理那些槽。
+		集群中每个节点都知道数据库中16384个槽分别指派给集群中的哪些节点。
+
+		clusterState结构中的slots数组记录集群16384个槽指派信息
+		为什么要保存在两个地方 clusterState 和clusterNode
+			1、如果节点值使用clusterNode.slots数组来记录槽的指派信息，那么为了知道槽I是否已经被指派，或者I被指派给那个节点需要遍历clusterState.nodes字典。 而通过slots数组访问只需要O(1).
+			2、 clusterNode.slots数组方便节点间槽信息传递。
+
+		CLUSTER ADDSLOTS <slot> ...........
+		接受一个或多个参数， 并将所有输入的槽指派给接受收该命令的节点负责。
+		//python 实现
+		def CLUSTER_ADDSLOTS(*all_input_slot):
+			for i in all_input_slots:
+				if clusterState.clots[i] != NULL:
+					reply_error()
+					return
+			for i in all_input_slots:
+				clusterState.slots[i] = clusterState.myself
+				setSlotBit(clusterState.myself.slots, i)
+		在对数据库中的16384个槽都进行指派后，集群就会进入上线状态，这是客户端就可以先集群中节点发送数据命令了
+		1、接受命令的节点计算出要出力键属于哪个槽， 并检查这个槽是否指派给自己。
+		如果不是自己返回MOVED操作，指引客户端转向正确节点。
+			MOVED <slot> <ip>:<port>  MOVED 10086 127.0.0.1:7005
+		move操作对用户而言是透明的。
+
+		节点数据库实现
+			集群节点保存键值对以及键值过期时间的方式不变
+			 区别：节点只使用0号数据库。
+			 zskiplist *slots_to_keys;
+			 每个节点的分值score都是一个槽号，而每个节点的数据成员都是一个数据库键。
+			 数据库添加新的键或删除时都需要在zskiplist上进行对应操作。
+
+	从新分片
+		redis集群的从新分片操作可以将任意数量已经指派给某个节点的槽指派给一个节点，并且相关槽所属的键值也会从源节点被移动到目标节点。
+
+		不需要下线？
+
+		集群管理软件redis-trib负责执行
+		步骤：
+			1、redis-trib 对目标节点发送发送cluster setslot <slot> importing <source_id>
+			告诉目标节点准备好从源节点导入（import）属于槽slot的键值对。
+			2、redis-trib 对源节点发送cluster setslot <slot> migrating <target_id>
+			告诉源节点准备属于slot的键值对迁移（migrate）到目标节点。
+			3、redis-strib向源节点发送cluster getkeysinslot <slot> <count>
+			4、redis-strb 向目标节点发送获取count个键值对
+			5、重复步骤3和步骤4
+			6、 redis-strb向集群中的任意一个节点发送将slot指派目标节点
+			如果是多个槽，键分别执行上述步骤。
+
+		对于正在执行迁移的 ASK错误
+			收到key所属于slot正好指向知己，数据库查找key如果没找到，查看clusterState.migrating_slots_to[i]看是否正在进行迁移。如果正在迁移返回ACK错误
+
+
+			ASKING 命令打开 客户端ACK_ASKING标志 state 
+			判断state的ACK_ASKING标志和clusterState.importing_slots_from[i] 否则返回MOVED
+
+	复制和故障转移
+		设置从节点 CLUSTER REPLICATE <node_id>
+		让节点成为node_id所指定节点的从节点，并开始对主节点的进行复制
+		1、设置clusterState.myself.slaveof指向clusterState.nodes字典中node_id所对应的节点
+		2、修改节点clusterState.myself.flags为CLUSTER_NODE_SLAVE标示。
+		3、进行复制，相当于发送SLAVEOF。
+	故障检测
+		当一个主节点A通过晓得得知主节点B认为主节点C进入疑似下线状态
+
+	消息
+		集群中的各个节点通过发送和接收消息message来进行通信
+		1、MEET消息， 当发送者接受到客户端加入节点命令cluster meet时，发送者给目标节点发送MEET消息
+			请求接收者加入到发送着的集群里面。
+		2、PING消息：集群里面的每个节点每隔一秒钟就会从已知节点中随机选择出五个节点，然后对这个5个节点最长时间没有发送PING消息的节点发送PING消息，一次来检测被选中节点是否在线，除此之外，如果节点A最后一次收到节点B发送的PONG消息的时间，距离当前时间超过cluster-node-tineout选项设置的一半，那么也会发送ping消息。
+		3、PONG消息， 当接收者收到发送者的MEET或者PING消息，为了向发送者确认这条消息已经刀法，返回PONG消息，另外节点通过向集群广播自己PONG消息，刷新其他节点中本节点的信息。比如故障转移成为主节点后发送PONG消息。
+		4、FAIL消息：当一个主节点A判断另一个主节点B已经进入FAIL状态时，节点A会向集群官博一条关于B的FAIL消息，所有节点收到这条消息都会立即将B节点标记为以下线。
+		5、PUBLIST消息：当节点收到一个PUBLIST命令时，节点会执行这个命令，并向集群广播一条PUBLIST消息
+
+		消息头
+			消息头除了包含消息正文之外，还记录消息发送者自身的一些信息，因为这些信息也会被消息接收者用到。
+			typedef struct {
+				uint32_t totlen; //消息的长度 消息头+正文
+				uint16_t type;//消息类型
+				uint16_t count; //包含节点信息数量
+
+				uint64_t currentEpoch; //发送者所处的配置纪元
+				uint64_t configEpoch; 
+
+				//发送者名字
+				char sender[];
+
+				unsinged char myslots[REDIS_CLUSTER_CLOTS/8];
+
+				char slaveof[NAME_LEN]; //主节点名字或NULL
+				uint32_t port;
+				uint16_t flags;
+				unsinged char state;
+				union clusterMsgDate data;
+			}  clusterMsg
+			接收者会在自己的clusterState.nodes字典找到发送者对应的clusterNode结构，并对结构进行更新。 currentEpolch 逻辑纪元，只有大于才更新， sender 发送者 myslots绑定的槽。 其他状态信息。
+
+			MEET/PING/PONG消息实现
+			gossip协议
+			通过type来判断消息类型
+
+		
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
