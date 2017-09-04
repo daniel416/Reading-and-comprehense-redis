@@ -11,60 +11,60 @@ redis阅读理解，带详细注释
 
 阅读计划和进度：
 ===================================  
-第一阶段：
-   阅读redis的数据结构部分。
-   内存分配 amalloc.c和zmalloc.h。
-   动态字符串sds.c和sds.h。
-   双端队列 adlist.h和adlist.c。
-   字典 dict.h和dict.c。
-   跳跃表 关于zskiplist结构和zskiplistNode结构。
-   日志类型 hyperloglog.c的hllhdr。
+	第一阶段：
+	   阅读redis的数据结构部分
+	   内存分配 amalloc.c和zmalloc.h
+	   动态字符串sds.c和sds.h
+	   双端队列 adlist.h和adlist.c
+	   字典 dict.h和dict.c
+	   跳跃表 关于zskiplist结构和zskiplistNode结构
+	   日志类型 hyperloglog.c的hllhdr
 
-第二阶段
-	熟悉redis的内存编码结构。
-	整数集合数据结构 intset.h和intset.c。
-	压缩列表数据结构 ziplist.h和ziplist.c。
+	第二阶段
+		熟悉redis的内存编码结构
+		整数集合数据结构 intset.h和intset.c
+		压缩列表数据结构 ziplist.h和ziplist.c
 
-第三阶段
-	熟悉 Redis 数据类型的实现。
-	对象系统 object.c。
-	字符串键 t_string.c。
-	列表键 t_list.c。
-	散列键 t_hash.c。
-	集合键 t_set.c。
-	有序集合键 t_zset.c。
-	hyperloglog键。
+	第三阶段
+		熟悉 Redis 数据类型的实现
+		对象系统 object.c
+		字符串键 t_string.c
+		列表键 t_list.c
+		散列键 t_hash.c
+		集合键 t_set.c
+		有序集合键 t_zset.c
+		hyperloglog键
 
-第四阶段
- 	熟悉redis数据库的实现
- 	数据库实现 redis.h文件中redisDb结构以及db.c文件
- 	通知功能notify.c
- 	RDB持久化rdb.c
- 	AOF持久化 aof.c
- 	以及一些独立功能模块的实现
- 	发布和订阅 redis.h文件的pubsubPattern 以及pubsub.c文件
- 	事务redis.h文件的multiState结构以及multiCmd结构 multi.c文件
+	第四阶段
+	 	熟悉redis数据库的实现
+	 	数据库实现 redis.h文件中redisDb结构以及db.c文件
+	 	通知功能notify.c
+	 	RDB持久化rdb.c
+	 	AOF持久化 aof.c
+	 	以及一些独立功能模块的实现
+	 	发布和订阅 redis.h文件的pubsubPattern 以及pubsub.c文件
+	 	事务redis.h文件的multiState结构以及multiCmd结构 multi.c文件
 
- 第五阶段
- 	熟悉客户端和服务端的代码实现
- 	时间处理模型
- 	网络链接库anet.c和network.c
- 	服务端 redis.c
- 	客户端 redis-cli.c
- 	独立功能模块代码实现
- 	lua脚本  scripting.c
- 	慢查询 slowlog.c
- 	监视 monitor.c
+	 第五阶段
+	 	熟悉客户端和服务端的代码实现
+	 	时间处理模型
+	 	网络链接库anet.c和network.c
+	 	服务端 redis.c
+	 	客户端 redis-cli.c
+	 	独立功能模块代码实现
+	 	lua脚本  scripting.c
+	 	慢查询 slowlog.c
+	 	监视 monitor.c
 
- 第六阶段 
- 	熟悉Redis多机部分代码实现
- 	复制功能 replication.c
- 	Redis Sentinel sentinel.c 哨点检测
- 	集群 cluster.c
+	 第六阶段 
+	 	熟悉Redis多机部分代码实现
+	 	复制功能 replication.c
+	 	Redis Sentinel sentinel.c 哨点检测
+	 	集群 cluster.c
 
-进度：
-	2017.9.5 完成代码走读，了解nginx基本的实现机制。
-	后期计划重点学习redis 集群和备份实现机制。
+	进度：
+		2017.9.5 完成代码走读，了解nginx基本的实现机制。
+		后期计划重点学习redis 集群和备份实现机制。
 
 问题及改造点： 
 ===================================  
@@ -98,7 +98,8 @@ redis阅读理解，带详细注释
   	解决办法：
   		通过sendfile或者aio方式发送，避免多次内核与应用层交互，提高性能。或者在全量同步的时候，不做RDB重写，而是直接把内存中KV安装RDB格式组包直接发送到slave。  
 
-问题：
+问题： 
+===================================  
 	1、qps比较高的情况下，由于单线程的原因，时延会慢慢增大。
 	2、aof会占用磁盘空间很大，当磁盘空间满了后，flushAppendOnlyFile会失败，这时候无法恢复，会丢失部分数据,只能加硬盘修复。
 	3、hash结构存储的HGETALL、HDEL，如果hash上存储的kv对太多，容易造成redis阻塞，进一步引起集群节点反复掉线，集群抖动进一步引起整体同步.
@@ -106,8 +107,8 @@ redis阅读理解，带详细注释
 	4、slave重启会触发全量同步，可以优化为增量同步，LAVE重启需要全量同步，是否可以在重启前先记录下ID和偏移量。
 	5、rdb aof重写容易触发oom 
 	6、热点数据和大value数据容易造成负载不均。
-	
-=================================== 
-运维方面：  
+
+运维方面：
+===================================   
 	1. 多实例部署的时候，最好保证master slave在不同的物理机上，保证一个物理机掉电等故障，能正常提供服务  
 	2. 同一物理机多实例部署的时候，最好每个实例的redis-server放在不同路径下面，当对redis做二次开发的时候，初期验证阶段可以只替换部分实例，这样对业务影响面较小  
