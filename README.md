@@ -12,13 +12,13 @@ redis阅读理解，带详细注释
 阅读计划和进度：
 ===================================  
 	第一阶段：
-	   阅读redis的数据结构部分
-	   内存分配 amalloc.c和zmalloc.h
-	   动态字符串sds.c和sds.h
-	   双端队列 adlist.h和adlist.c
-	   字典 dict.h和dict.c
-	   跳跃表 关于zskiplist结构和zskiplistNode结构
-	   日志类型 hyperloglog.c的hllhdr
+		阅读redis的数据结构部分
+		内存分配 amalloc.c和zmalloc.h
+		动态字符串sds.c和sds.h
+		双端队列 adlist.h和adlist.c
+		字典 dict.h和dict.c
+		跳跃表 关于zskiplist结构和zskiplistNode结构
+		日志类型 hyperloglog.c的hllhdr
 
 	第二阶段
 		熟悉redis的内存编码结构
