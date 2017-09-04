@@ -12,26 +12,29 @@ redis阅读理解，带详细注释
 阅读计划和进度：
 ===================================  
 第一阶段：
-   阅读redis的数据结构部分
-   内存分配 amalloc.c和zmalloc.h
-   动态字符串sds.c和sds.h
-   双端队列 adlist.h和adlist.c
-   字典 dict.h和dict.c
-   跳跃表 关于zskiplist结构和zskiplistNode结构
-   日志类型 hyperloglog.c的hllhdr
+   阅读redis的数据结构部分。
+   内存分配 amalloc.c和zmalloc.h。
+   动态字符串sds.c和sds.h。
+   双端队列 adlist.h和adlist.c。
+   字典 dict.h和dict.c。
+   跳跃表 关于zskiplist结构和zskiplistNode结构。
+   日志类型 hyperloglog.c的hllhdr。
+
 第二阶段
-	熟悉redis的内存编码结构
-	整数集合数据结构 intset.h和intset.c
-	压缩列表数据结构 ziplist.h和ziplist.c
+	熟悉redis的内存编码结构。
+	整数集合数据结构 intset.h和intset.c。
+	压缩列表数据结构 ziplist.h和ziplist.c。
+
 第三阶段
-	熟悉 Redis 数据类型的实现
-	对象系统 object.c
-	字符串键 t_string.c
-	列表键 t_list.c
-	散列键 t_hash.c
-	集合键 t_set.c
-	有序集合键 t_zset.c
-	hyperloglog键
+	熟悉 Redis 数据类型的实现。
+	对象系统 object.c。
+	字符串键 t_string.c。
+	列表键 t_list.c。
+	散列键 t_hash.c。
+	集合键 t_set.c。
+	有序集合键 t_zset.c。
+	hyperloglog键。
+
 第四阶段
  	熟悉redis数据库的实现
  	数据库实现 redis.h文件中redisDb结构以及db.c文件
@@ -41,6 +44,7 @@ redis阅读理解，带详细注释
  	以及一些独立功能模块的实现
  	发布和订阅 redis.h文件的pubsubPattern 以及pubsub.c文件
  	事务redis.h文件的multiState结构以及multiCmd结构 multi.c文件
+
  第五阶段
  	熟悉客户端和服务端的代码实现
  	时间处理模型
@@ -51,6 +55,7 @@ redis阅读理解，带详细注释
  	lua脚本  scripting.c
  	慢查询 slowlog.c
  	监视 monitor.c
+
  第六阶段 
  	熟悉Redis多机部分代码实现
  	复制功能 replication.c
@@ -92,7 +97,6 @@ redis阅读理解，带详细注释
 		这样有点浪费CPU资源和内存。  
   	解决办法：
   		通过sendfile或者aio方式发送，避免多次内核与应用层交互，提高性能。或者在全量同步的时候，不做RDB重写，而是直接把内存中KV安装RDB格式组包直接发送到slave。  
-
 
 问题：
 	1、qps比较高的情况下，由于单线程的原因，时延会慢慢增大。
