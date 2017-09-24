@@ -1,0 +1,89 @@
+HBase 
+	Hadoop Database 是一个高可靠性、高性能、面向列、可伸缩的分布式存储系统。
+
+	HBase是Google Bigtable的开源实现。
+	HBase利用Hadoop HDFS作为其文件存储系统.
+	HBase利用Hadoop MapReduce来处理HBase中的海量数据。 HBase利用Zookeeper作为系统服务。
+
+	HDFS为HBase提供高可靠性的底层存储支持。
+	MapReduce为HBase提供了高性能计算能力。
+	ZooKeeper为HBase提供了稳定服务和failover机制。
+
+	pig和Hive还为HBase提供了高层语言支持，使得在HBase进行数据统计处理变得简单。
+	sqoop则为HBase提供了方便的RDBMS数据导入功能，使得传统数据库数据向HBase中迁移变得非常方便。
+
+HBase访问接口
+	1、Native Java API 最常规和高效的访问方式，适合Hadoop MapReduce Job并行批处理HBase表数据。
+	2、HBase Shell HBase的命令行工具，最简单的接口，适合HBase管理使用。
+	3、thrifs Gateway 利用Thrifs序列化技术，支持C++，PHP,Python等多种语言，适合其他异构系统在线访问HBase表数据。
+	4、 REST Gateway,支持REST风格的HTTP API访问HBase，解除了语言限制。
+	5、 Pig 可以使用Pig Latin流编程语言来操作HBase中的数据，适合做数据统计。
+	6、 Hive 当前Hive的release版本尚没有加入对HBase的支持。
+
+
+	ROW KEY：行键 Table的主键， Table中的记录按照Row Key排序
+	Timestamp：时间戳，每次数据操作对应的时间戳，可以看作是数据的version number。
+	column family:列簇 Table在水平方向有一个或多个Colnmn family组成，一个Column Family中可以由任意多个Column组成，即Column Family支持动态扩展，无需预先定义Column的数量及类型，所有Column均以二进制格式存储，用户需要自行进行类型转换。
+
+	当Table随着记录数不断增加而变大后，会逐渐分裂成多份splits，称为regions，一个region由[startkey,endkey]表示，不同的region会被Master分配给响应的RegionServer进行管理。
+
+	HBase中有两张特殊的Table。
+	.META.:记录了用户表的region信息，.META.可以有多个region
+	-ROOT-:记录了.META.表的Region信息，-ROOT-只有一个region。
+	Zookeeper中记录了-ROOT-表的location
+																UserTable1
+										.MATE.					
+								region[startkey, endkey]     	UserTable2
+	zookeeper ----> -ROOT- ---> region[startkey, endkey]
+								region[startkey, endkey]		UserTableN
+
+	Client访问用户数据之前需要首先访问zookeeper，然后访问-ROOT-表，接着访问.META.表，最后才能找到用户数据的位置去访问，中间需要多次网络操作，不过client端会做cache缓存。
+
+MapReduce ON HBase
+	在HBase系统允许批处理运算，最方便和最使用的模型依然是MapReduce。
+
+	client  --->  Zookeeper    <-------Master
+		|
+		|
+		|	
+	HRegionServer -->Hregion 			HRegionServer        HRegionServer
+						|
+						|
+					DFS client
+
+
+client 
+	HBase Client 使用HBase的RPC机制与HMaster和HRegionServer进行通信，对于高丽操作，client与hmaster进行RPC，对于数据读写操作，client与HRegionServer进行RPC
+
+Zookeeper
+	Zookeerper quorum除了存储了-ROOT-表地址和HMaster的地址，HRegionServer也会把自己以Ephemeral方式注册到Zookeeper中，使HMaster可以随时感知到个HRegionServer的健康状态。
+
+HMaster
+	HMaster没有单点问题，HBase中可以启动多个HMaster，通过Master Election机制保证总有一个Master运行，HMaster在功能上主要负责Table和Region的管理工作。
+
+	1、管理用户对Table的增、删、改、查。
+	2、管理HRegionServer的负载均衡，调整Region分布。
+	3、在region split后，负责新region的分配。
+	4、在HRegionServer停机后，负责失效HRegionServer上的Regions迁移。
+
+HRegionServer
+	HRegionServer主要负责响应用户I/O请求，向HDFS文件系统中读写数据，是HBase中最核心的模块。
+
+	HRegionServer内部管理了一些列HRegion对象，每个HRegion对应了Table中的一个Region，HRegion中由多个HStore组成，每个HStore对应了Table中的一个Column Family的存储，可以看出Column其实就是一个集中的存储单元，因此最好将具备共同I/O特性的column Family中 这样最高效。
+
+	HStore存储是HBase存储的核心了，其中由两部分组成，一部分是MemStore，一部分是StoreFiles。MemStore是Stored Memory Buffer用户写入的数据首先会放入MemStroe，当MemStore满了以后会flush成一个StoreFile，当StoreFile文件数量增长到一个阀值，会触发compact合并操作，将多个storefiles合并成一个storefile，合并过程中会进行行版本合并和数据删除，因此可以看出HBase其实只有增加数据，所有的更新和删除操作都是在后续compact过程进行的， 这使得用户的写操作只要进入内存中就可以立即返回，保证了HBase I/O的高性能，当storeFiles compact后，会逐渐形成越来越大的StoreFile，当单个StoreFile大小超过一定阀值后，会触发split操作，同时把当前region split成2个region，父region会下线，新split出的2个孩子region会被HMaster分配到相应的HRegionServer上，使得原先1个region的压力得以分流到2个region上。
+
+	HLog，因为上述的HStore在系统正常工作的前途下是没有问题的，但是在分布式系统环境中，无法避免系统出错或者宕机，因此一旦HRegionServer意外退出，MemStore中的内存数据将会丢失，这就需要引入HLog，每个HRegionServer中都有一个HLog对象，每次用户操作Memstore的同时，也会写一份数据到HLOG文件，HLog文件会定期滚动出新的，并删除旧的文件（已经持久化到StoreFile中的数据），当HRegionServer意外终止后，HMaster会通过Zookeeper感知到，HMaster首先会处理遗留在HLog文件，将其中不同Region的Log文件进行拆分，分别放到响应region的目录下，然后再将失效region从新分配，领取到浙西region的HRegion的HRegionServer会在Load_Region的过程中，会发现有历史HLog需要处理，因此会Replay_HLog中的数据到Memstore中，然后flush到StoreFiles，完成数据恢复。
+HBase 存储格式
+	HBase中的所有数据文件都存储在Hadoop HDFS文件系统上，主要包括上述提交的两种文件类型。
+	1、HFile HBase中KeyValue数据格式的存储格式，HFile是Hadoop的二进制格式文件，实际上StoreFile就是对HFile做了轻量级包装，即StoreFile底层就是HFile
+	2、HLogFile HBase中WAL的存储格式，
+
+	HFile文件时不定长的
+	长度固定的只有其中两块
+	trailer和finleInfo
+	trailer中指针指向其他数据库块的其实地址。
+	fileinfo中记录了文件的一些mate信息
+	data index和meta index记录了每个data块的和meta块的起始地点。
+
+	Data Block 是HBase IO的基本大源，为了提高效率 HRegionServer中有LRU的Block cache机制，每个Date块的大小可以在创建一个Table的时候通过参数指定大号的Block有利于顺序scan，小号block有利于随机查询每个data块除开头magic以外就是KeyValue对拼接而成，Magic内容就是一些随机数字，
